@@ -1,22 +1,24 @@
 package org.mitre.sdmiley.httpproxy;
 
-import com.pojosontheweb.selenium.ManagedDriverJunit4TestBase;
+import org.apache.commons.io.IOUtils;
+import org.junit.Assert;
 import org.junit.Test;
 
-import static com.pojosontheweb.selenium.Findrs.*;
-import static org.openqa.selenium.By.*;
+import java.io.StringWriter;
+import java.net.URL;
 
-public class ProxyTest extends ManagedDriverJunit4TestBase {
+
+public class ProxyTest {
 
     private String url = System.getProperty("proxy.url", "http://localhost:8080/smiley-proxy");
 
     @Test
-    public void testSimple() {
-        getWebDriver().get(url);
-        findr()
-            .elem(id("main-title"))
-            .where(textEquals("Hi Smiley !"))
-            .eval();
+    public void testSimple() throws Exception {
+        URL u = new URL(url);
+        StringWriter sw = new StringWriter();
+        IOUtils.copy(u.openStream(), sw, "utf-8");
+        String html = sw.toString();
+        Assert.assertTrue(html.contains("Hi Smiley !"));
     }
 
 }
