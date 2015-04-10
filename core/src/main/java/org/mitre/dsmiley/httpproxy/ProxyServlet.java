@@ -366,7 +366,7 @@ public class ProxyServlet extends HttpServlet {
 
   protected void serviceAsync(final HttpRequest proxyRequest, final HttpServletRequest servletRequest, final HttpServletResponse servletResponse) {
     final AsyncContext asyncContext = servletRequest.startAsync();
-    getProxyClientAsync().execute(targetHost, proxyRequest, new FutureCallback<HttpResponse>() {
+    getProxyClientAsync().execute(getTargetHost(servletRequest), proxyRequest, new FutureCallback<HttpResponse>() {
 
       @Override
       public void completed(HttpResponse httpResponse) {
