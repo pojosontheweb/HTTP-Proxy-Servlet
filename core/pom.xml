@@ -2,59 +2,60 @@
   <modelVersion>4.0.0</modelVersion>
 
   <parent>
-    <groupId>org.sonatype.oss</groupId>
-    <artifactId>oss-parent</artifactId>
-    <version>7</version>
+    <groupId>org.mitre.dsmiley.httpproxy</groupId>
+    <artifactId>smiley-http-proxy-servlet-parent</artifactId>
+    <version>1.7-SNAPSHOT</version>
   </parent>
 
-  <groupId>org.mitre.dsmiley.httpproxy</groupId>
-  <artifactId>smiley-http-proxy-servlet-parent</artifactId>
-  <version>1.7-SNAPSHOT</version>
-  <packaging>pom</packaging>
+  <artifactId>smiley-http-proxy-servlet</artifactId>
+  <packaging>jar</packaging>
 
-  <name>Smiley's HTTP Proxy Servlet</name>
-  <description>An HTTP Proxy (aka gateway) in the form of a Java servlet. An
-    HTTP proxy is useful for AJAX applications to communicate with web
-    accessible services on hosts other than where the web application is hosted.
-  </description>
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
-  <url>https://github.com/dsmiley/HTTP-Proxy-Servlet</url>
+    <!-- works with v4.1 and forward -->
+    <httpclient.version>4.3.4</httpclient.version>
 
-  <licenses>
-    <license>
-      <name>The Apache Software License, Version 2.0</name>
-      <url>http://www.apache.org/licenses/LICENSE-2.0.txt</url>
-      <distribution>repo</distribution>
-    </license>
-  </licenses>
-
-  <developers>
-    <developer>
-      <name>David Smiley</name>
-      <email>dsmiley@apache.org</email>
-      <!-- I used to work for MITRE for many years but I don't anymore. -->
-      <!--<organization>MITRE</organization>-->
-    </developer>
-  </developers>
-
-  <scm>
-    <url>https://github.com/dsmiley/HTTP-Proxy-Servlet</url>
-    <connection>scm:git:https://dsmiley@github.com/dsmiley/HTTP-Proxy-Servlet.git</connection>
-    <developerConnection>scm:git:git@github.com:dsmiley/HTTP-Proxy-Servlet.git</developerConnection>
-  </scm>
-
-  <modules>
-    <module>core</module>
-    <module>webtests</module>
-  </modules>
+    <httpasyncclient.version>4.0.2</httpasyncclient.version>
+  </properties>
 
   <dependencies>
+
+    <!-- FYI tomcat 5.5 & beyond -->
     <dependency>
-      <groupId>junit</groupId>
-      <artifactId>junit</artifactId>
-      <version>4.11</version>
+      <groupId>javax.servlet</groupId>
+      <artifactId>javax.servlet-api</artifactId>
+      <version>3.1.0</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.httpcomponents</groupId>
+      <artifactId>httpasyncclient</artifactId>
+      <version>${httpasyncclient.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.apache.httpcomponents</groupId>
+      <artifactId>httpclient</artifactId>
+      <version>${httpclient.version}</version>
+      <classifier>tests</classifier>
       <scope>test</scope>
     </dependency>
+
+    <dependency>
+      <groupId>httpunit</groupId>
+      <artifactId>httpunit</artifactId>
+      <version>1.7</version>
+      <scope>test</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>log4j</groupId>
+      <artifactId>log4j</artifactId>
+      <version>1.2.16</version>
+      <scope>test</scope>
+    </dependency>
+
   </dependencies>
 
   <build>

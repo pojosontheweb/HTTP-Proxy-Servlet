@@ -24,21 +24,30 @@ import org.apache.http.HttpHost;
 import org.apache.http.HttpRequest;
 import org.apache.http.HttpResponse;
 import org.apache.http.client.HttpClient;
+import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.AbortableHttpRequest;
 import org.apache.http.client.params.ClientPNames;
 import org.apache.http.client.params.CookiePolicy;
 import org.apache.http.client.utils.URIUtils;
+import org.apache.http.concurrent.FutureCallback;
 import org.apache.http.entity.InputStreamEntity;
 import org.apache.http.impl.client.DefaultHttpClient;
 import org.apache.http.impl.conn.tsccm.ThreadSafeClientConnManager;
+import org.apache.http.impl.nio.client.CloseableHttpAsyncClient;
+import org.apache.http.impl.nio.client.HttpAsyncClients;
+import org.apache.http.impl.nio.conn.PoolingNHttpClientConnectionManager;
+import org.apache.http.impl.nio.reactor.DefaultConnectingIOReactor;
 import org.apache.http.message.BasicHeader;
 import org.apache.http.message.BasicHttpEntityEnclosingRequest;
 import org.apache.http.message.BasicHttpRequest;
 import org.apache.http.message.HeaderGroup;
+import org.apache.http.nio.client.HttpAsyncClient;
+import org.apache.http.nio.reactor.ConnectingIOReactor;
 import org.apache.http.params.BasicHttpParams;
 import org.apache.http.params.HttpParams;
 import org.apache.http.util.EntityUtils;
 
+import javax.servlet.AsyncContext;
 import javax.servlet.ServletException;
 import javax.servlet.http.Cookie;
 import javax.servlet.http.HttpServlet;
@@ -80,6 +89,9 @@ public class ProxyServlet extends HttpServlet {
   /** A boolean parameter name to enable forwarding of the client IP  */
   public static final String P_FORWARDEDFOR = "forwardip";
 
+  /** A boolean parameter name to enable async (NIO) proxy */
+  public static final String P_ASYNC = "async";
+
   /** The parameter name for the target (destination) URI to proxy to. */
   protected static final String P_TARGET_URI = "targetUri";
   protected static final String ATTR_TARGET_URI =
@@ -102,6 +114,7 @@ public class ProxyServlet extends HttpServlet {
   protected HttpHost targetHost;//URIUtils.extractHost(targetUriObj);
 
   private HttpClient proxyClient;
+  private HttpAsyncClient proxyClientAsync;
 
   @Override
   public String getServletInfo() {
@@ -125,24 +138,30 @@ public class ProxyServlet extends HttpServlet {
     return getServletConfig().getInitParameter(key);
   }
 
+  protected Boolean getBoolConfigParam(String key) {
+    String s = getConfigParam(key);
+    if (s!=null) {
+      return Boolean.parseBoolean(s);
+    }
+    return false;
+  }
+
   @Override
   public void init() throws ServletException {
-    String doLogStr = getConfigParam(P_LOG);
-    if (doLogStr != null) {
-      this.doLog = Boolean.parseBoolean(doLogStr);
-    }
-
-    String doForwardIPString = getConfigParam(P_FORWARDEDFOR);
-    if (doForwardIPString != null) {
-        this.doForwardIP = Boolean.parseBoolean(doForwardIPString);
-    }
+    this.doLog = getBoolConfigParam(P_LOG);
+    this.doForwardIP = getBoolConfigParam(P_FORWARDEDFOR);
 
     initTarget();//sets target*
 
-    HttpParams hcParams = new BasicHttpParams();
-    hcParams.setParameter(ClientPNames.COOKIE_POLICY, CookiePolicy.IGNORE_COOKIES);
-    readConfigParam(hcParams, ClientPNames.HANDLE_REDIRECTS, Boolean.class);
-    proxyClient = createHttpClient(hcParams);
+    // init proxy client : async or classic
+    if (getBoolConfigParam(P_ASYNC)) {
+      proxyClientAsync = createAsyncHttpClient();
+    } else {
+      HttpParams hcParams = new BasicHttpParams();
+      hcParams.setParameter(ClientPNames.COOKIE_POLICY, CookiePolicy.IGNORE_COOKIES);
+      readConfigParam(hcParams, ClientPNames.HANDLE_REDIRECTS, Boolean.class);
+      proxyClient = createHttpClient(hcParams);
+    }
   }
 
   protected void initTarget() throws ServletException {
@@ -183,10 +202,37 @@ public class ProxyServlet extends HttpServlet {
     return new DefaultHttpClient(new ThreadSafeClientConnManager(), hcParams);
   }
 
+  protected HttpAsyncClient createAsyncHttpClient() {
+    try {
+      RequestConfig requestConfig = RequestConfig.custom()
+          .setSocketTimeout(10000)
+          .setConnectTimeout(10000).build();
+      ConnectingIOReactor ioReactor = new DefaultConnectingIOReactor();
+      PoolingNHttpClientConnectionManager cm =
+          new PoolingNHttpClientConnectionManager(ioReactor);
+      CloseableHttpAsyncClient res = HttpAsyncClients.custom()
+          .setDefaultRequestConfig(requestConfig)
+          .setConnectionManager(cm)
+          .build();
+      res.start();
+      return res;
+    } catch(Exception e) {
+      throw new RuntimeException(e);
+    }
+  }
+
   /** The http client used.
    * @see #createHttpClient(HttpParams) */
   protected HttpClient getProxyClient() {
     return proxyClient;
+  }
+
+  protected HttpAsyncClient getProxyClientAsync() {
+    return proxyClientAsync;
+  }
+
+  protected boolean isAsync() {
+    return proxyClientAsync!=null;
   }
 
   /** Reads a servlet config parameter by the name {@code hcParamName} of type {@code type}, and
@@ -207,28 +253,36 @@ public class ProxyServlet extends HttpServlet {
         throw new RuntimeException(e);
       }
     }
-    hcParams.setParameter(hcParamName,val_obj);
+    hcParams.setParameter(hcParamName, val_obj);
   }
 
   @Override
   public void destroy() {
-    //As of HttpComponents v4.3, clients implement closeable
-    if (proxyClient instanceof Closeable) {//TODO AutoCloseable in Java 1.6
+    if (isAsync() && proxyClientAsync instanceof CloseableHttpAsyncClient) {
       try {
-        ((Closeable) proxyClient).close();
+        ((CloseableHttpAsyncClient)proxyClientAsync).close();
       } catch (IOException e) {
-        log("While destroying servlet, shutting down HttpClient: "+e, e);
+        log("While destroying servlet, shutting down HttpAsyncClient: " + e, e);
       }
     } else {
-      //Older releases require we do this:
-      if (proxyClient != null)
-        proxyClient.getConnectionManager().shutdown();
+      //As of HttpComponents v4.3, clients implement closeable
+      if (proxyClient instanceof Closeable) {//TODO AutoCloseable in Java 1.6
+        try {
+          ((Closeable) proxyClient).close();
+        } catch (IOException e) {
+          log("While destroying servlet, shutting down HttpClient: " + e, e);
+        }
+      } else {
+        //Older releases require we do this:
+        if (proxyClient != null)
+          proxyClient.getConnectionManager().shutdown();
+      }
     }
     super.destroy();
   }
 
   @Override
-  protected void service(HttpServletRequest servletRequest, HttpServletResponse servletResponse)
+  protected void service(final HttpServletRequest servletRequest, final HttpServletResponse servletResponse)
       throws ServletException, IOException {
     //initialize request attributes from caches if unset by a subclass by this point
     if (servletRequest.getAttribute(ATTR_TARGET_URI) == null) {
@@ -258,32 +312,33 @@ public class ProxyServlet extends HttpServlet {
 
     setXForwardedForHeader(servletRequest, proxyRequest);
 
+    if (doLog) {
+      log("proxy " + method + " uri: " + servletRequest.getRequestURI() + " -- " + proxyRequest.getRequestLine().getUri());
+    }
+
+    if (isAsync()) {
+
+      // Async, non-blocking proxy
+      // -------------------------
+      serviceAsync(proxyRequest, servletRequest, servletResponse);
+
+    } else {
+
+      // Regular, blocking proxy
+      // -----------------------
+      serviceSync(proxyRequest, servletRequest, servletResponse);
+
+    }
+  }
+
+  protected void serviceSync(HttpRequest proxyRequest, HttpServletRequest servletRequest, HttpServletResponse servletResponse) throws ServletException, IOException {
     HttpResponse proxyResponse = null;
     try {
       // Execute the request
-      if (doLog) {
-        log("proxy " + method + " uri: " + servletRequest.getRequestURI() + " -- " + proxyRequest.getRequestLine().getUri());
-      }
-      proxyResponse = proxyClient.execute(getTargetHost(servletRequest), proxyRequest);
+      proxyResponse = getProxyClient().execute(getTargetHost(servletRequest), proxyRequest);
 
       // Process the response
-      int statusCode = proxyResponse.getStatusLine().getStatusCode();
-
-      if (doResponseRedirectOrNotModifiedLogic(servletRequest, servletResponse, proxyResponse, statusCode)) {
-        //the response is already "committed" now without any body to send
-        //TODO copy response headers?
-        return;
-      }
-
-      // Pass the response code. This method with the "reason phrase" is deprecated but it's the only way to pass the
-      //  reason along too.
-      //noinspection deprecation
-      servletResponse.setStatus(statusCode, proxyResponse.getStatusLine().getReasonPhrase());
-
-      copyResponseHeaders(proxyResponse, servletRequest, servletResponse);
-
-      // Send the content to the client
-      copyResponseEntity(proxyResponse, servletResponse);
+      handleResponse(proxyResponse, servletRequest, servletResponse);
 
     } catch (Exception e) {
       //abort request, according to best practice with HttpClient
@@ -292,9 +347,9 @@ public class ProxyServlet extends HttpServlet {
         abortableHttpRequest.abort();
       }
       if (e instanceof RuntimeException)
-        throw (RuntimeException)e;
+        throw (RuntimeException) e;
       if (e instanceof ServletException)
-        throw (ServletException)e;
+        throw (ServletException) e;
       //noinspection ConstantConditions
       if (e instanceof IOException)
         throw (IOException) e;
@@ -307,6 +362,63 @@ public class ProxyServlet extends HttpServlet {
       //Note: Don't need to close servlet outputStream:
       // http://stackoverflow.com/questions/1159168/should-one-call-close-on-httpservletresponse-getoutputstream-getwriter
     }
+  }
+
+  protected void serviceAsync(final HttpRequest proxyRequest, final HttpServletRequest servletRequest, final HttpServletResponse servletResponse) {
+    final AsyncContext asyncContext = servletRequest.startAsync();
+    getProxyClientAsync().execute(targetHost, proxyRequest, new FutureCallback<HttpResponse>() {
+
+      @Override
+      public void completed(HttpResponse httpResponse) {
+        log("Response received from target : " + httpResponse.getStatusLine());
+        // Process the response
+        try {
+          handleResponse(httpResponse, servletRequest, servletResponse);
+          asyncContext.complete();
+        } catch (Exception e) {
+          failed(e);
+        }
+      }
+
+      @Override
+      public void failed(Exception e) {
+        try {
+          log("Error while contacting target host", e);
+          servletResponse.sendError(500, e.getMessage());
+        } catch (Exception e2) {
+          log("Error sending error", e2);
+        } finally {
+          asyncContext.complete();
+        }
+      }
+
+      @Override
+      public void cancelled() {
+        log("Cancelled");
+        asyncContext.complete();
+      }
+    });
+  }
+
+  protected void handleResponse(HttpResponse proxyResponse, HttpServletRequest servletRequest, HttpServletResponse servletResponse) throws ServletException, IOException {
+
+    int statusCode = proxyResponse.getStatusLine().getStatusCode();
+
+    if (doResponseRedirectOrNotModifiedLogic(servletRequest, servletResponse, proxyResponse, statusCode)) {
+      //the response is already "committed" now without any body to send
+      //TODO copy response headers?
+      return;
+    }
+
+    // Pass the response code. This method with the "reason phrase" is deprecated but it's the only way to pass the
+    //  reason along too.
+    //noinspection deprecation
+    servletResponse.setStatus(statusCode, proxyResponse.getStatusLine().getReasonPhrase());
+
+    copyResponseHeaders(proxyResponse, servletRequest, servletResponse);
+
+    // Send the content to the client
+    copyResponseEntity(proxyResponse, servletResponse);
   }
 
   protected boolean doResponseRedirectOrNotModifiedLogic(
